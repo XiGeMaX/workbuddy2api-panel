@@ -225,18 +225,9 @@ services:
       TZ: Asia/Shanghai
 ```
 
-然后在同一目录执行：
-
 ```bash
-docker compose pull
 docker compose up -d
-docker compose logs workbuddy2api | grep 'api_key='
-
-curl -s http://localhost:7863/healthz
-# {"healthy":0,"total":0,"service":"workbuddy2api"}
 ```
-
-首次启动会自动生成 `./config/config.json` 和随机 `api_key`，密钥可从上面的日志命令获取。启动后打开 **`http://localhost:7863/panel/`**，输入该密钥并完成账号登录。
 
 默认镜像地址为 `ghcr.io/xigemax/workbuddy2api-panel:latest`。首次发布后请在 GitHub 的 **Packages → workbuddy2api-panel → Package settings** 中将可见性设为 **Public**；若保持私有，部署机器需要先执行 `docker login ghcr.io`。
 
