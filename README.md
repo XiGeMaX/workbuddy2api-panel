@@ -202,30 +202,56 @@ flowchart LR
 - 一个或多个已注册的 CodeBuddy 账号，用于 OAuth 登录
 - 宿主机 Go ≥ 1.22（仅从源码构建时需要）
 
-### 方式一：Docker Compose（推荐服务器部署）
+### 方式一：Docker Compose（整段复制执行，推荐服务器部署）
+
+在任意空目录中整段粘贴执行；首次运行会生成随机 `api_key`，重复执行不会覆盖已有配置：
 
 ```bash
-# 1. 克隆
-git clone https://github.com/linguo2625469/workbuddy2api-panel.git
-cd workbuddy2api-panel
+mkdir -p workbuddy2api && cd workbuddy2api
+umask 077
+mkdir -p auths data
+printf 'PUID=%s\nPGID=%s\n' "$(id -u)" "$(id -g)" > .env
 
-# 2. 准备配置（compose 挂载此文件，缺失会导致容器启动失败）
-cp config.example.json config.json
-#    建议编辑 config.json 设置 api_key（或留空由程序自动生成随机密钥）
+if [ ! -f config.json ]; then
+  api_key="sk-$(od -An -N18 -tx1 /dev/urandom | tr -d ' \n')"
+  printf '{\n  "api_key": "%s"\n}\n' "$api_key" > config.json
+  echo "首次生成的 API key: $api_key"
+else
+  echo "检测到已有 config.json，保留原配置"
+fi
 
-# 3. 启动（首次会构建镜像，约 1-2 分钟）
-docker compose up -d --build
+cat > docker-compose.yml <<'EOF'
+services:
+  wb2api:
+    image: ghcr.io/xigemax/workbuddy2api-panel:latest
+    container_name: workbuddy2api
+    restart: unless-stopped
+    user: "${PUID:-10001}:${PGID:-10001}"
+    environment:
+      - TZ=Asia/Shanghai
+    ports:
+      - "7863:7863"
+    volumes:
+      - ./auths:/app/auths
+      - ./data:/app/data
+      - ./config.json:/app/config.json
+EOF
 
-# 4. 健康检查（无可用账号时返回 503）
+docker compose pull
+docker compose up -d
+
 curl -s http://localhost:7863/healthz
 # {"healthy":0,"total":0,"service":"workbuddy2api"}
 ```
 
 启动后打开 **`http://localhost:7863/panel/`**，用面板「添加账号」完成登录（见下节）。
 
+默认镜像地址为 `ghcr.io/xigemax/workbuddy2api-panel:latest`。首次发布后请在 GitHub 的 **Packages → workbuddy2api-panel → Package settings** 中将可见性设为 **Public**；若保持私有，部署机器需要先执行 `docker login ghcr.io`。
+
 常用运维命令：
 
 ```bash
+docker compose pull && docker compose up -d --force-recreate   # 更新到最新镜像
 docker compose logs -f          # 跟踪日志
 docker compose restart          # 重启
 docker compose down             # 停止并移除容器（数据在 ./auths 与 ./data，不受影响）
@@ -612,7 +638,14 @@ http://127.0.0.1:7863/panel/
 
 ### Docker 镜像
 
-多阶段镜像（`golang:1.23-alpine` 构建 → `alpine:3.20` 运行）一次编译全部四个二进制并随镜像分发：
+GitHub Actions 在 `main` 分支或 `v*` 标签更新后自动构建并发布镜像到 GHCR：
+
+- 镜像：`ghcr.io/xigemax/workbuddy2api-panel`
+- `main` 更新：发布 `latest`、`main` 与 `sha-<短提交>` 标签
+- `v*` 标签：额外发布对应语义化版本标签（如 `v1.11.1`、`1.11.1`）
+- 架构：`linux/amd64`、`linux/arm64`，同时生成 SBOM 与构建来源证明
+
+`docker-compose.yml` 默认拉取 `latest`。多阶段镜像（`golang:1.23-alpine` 构建 → `alpine:3.20` 运行）一次编译全部四个二进制并随镜像分发：
 
 - **wb2api**（主服务）、**signin_bin**、**login**、**credit** + 脚本（`login.sh` / `signin.sh` / `credit.sh` / `scripts/probe_active.py`）
 - 以 `app` 用户（uid 10001）运行，`app/auths` 与 `app/data` 预建
@@ -683,9 +716,9 @@ python3 scripts/probe_max_tokens.py   --base http://127.0.0.1:7863/v1 --key sk-x
 
 ### 3. 发布来源与合规边界
 
-- **无预编译 release**：仓库无 Release / tag，产物 = 源码自构建（Dockerfile 多阶段在本地构建时完成）
+- **GHCR 预编译镜像**：`main` 更新或 `v*` 标签推送后由 GitHub Actions 自动构建、发布，Compose 默认直接拉取
 - 登录 / 签到 / 积分工具：`./login.sh` / `./signin.sh` / `./credit.sh`
-- **无产物校验和**：`go.sum` 仅约束 Go 模块依赖；Docker 镜像由本地 `docker compose build` 生成，未引用第三方镜像
+- **产物可追溯**：GitHub Actions 为镜像生成 SBOM 与构建来源证明；生产环境可使用镜像 digest 固定版本
 - 上游 CodeBuddy 属腾讯系商业产品，本项目是其**非官方 OpenAI 兼容网关**；使用其账号做 API 网关涉及目标平台服务条款与账号风险，作者不对账号封禁、条款违约或使用结果负责
 
 ### 4. 授权使用边界
