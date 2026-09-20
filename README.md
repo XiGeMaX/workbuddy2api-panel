@@ -202,49 +202,41 @@ flowchart LR
 - 一个或多个已注册的 CodeBuddy 账号，用于 OAuth 登录
 - 宿主机 Go ≥ 1.22（仅从源码构建时需要）
 
-### 方式一：Docker Compose（整段复制执行，推荐服务器部署）
+### 方式一：Docker Compose（直接复制 YAML，推荐服务器部署）
 
-在任意空目录中整段粘贴执行；首次运行会生成随机 `api_key`，重复执行不会覆盖已有配置：
+新建 `docker-compose.yml`，直接粘贴以下内容：
 
-```bash
-mkdir -p workbuddy2api && cd workbuddy2api
-umask 077
-mkdir -p auths data
-printf 'PUID=%s\nPGID=%s\n' "$(id -u)" "$(id -g)" > .env
-
-if [ ! -f config.json ]; then
-  api_key="sk-$(od -An -N18 -tx1 /dev/urandom | tr -d ' \n')"
-  printf '{\n  "api_key": "%s"\n}\n' "$api_key" > config.json
-  echo "首次生成的 API key: $api_key"
-else
-  echo "检测到已有 config.json，保留原配置"
-fi
-
-cat > docker-compose.yml <<'EOF'
+```yaml
 services:
   wb2api:
-    image: ghcr.io/xigemax/workbuddy2api-panel:latest
     container_name: workbuddy2api
-    restart: unless-stopped
-    user: "${PUID:-10001}:${PGID:-10001}"
-    environment:
-      - TZ=Asia/Shanghai
-    ports:
-      - "7863:7863"
+    image: "ghcr.io/xigemax/workbuddy2api-panel:latest"
+    command: ["-config", "/app/config/config.json"]
     volumes:
       - ./auths:/app/auths
       - ./data:/app/data
-      - ./config.json:/app/config.json
-EOF
+      - ./config:/app/config
+    restart: unless-stopped
+    stop_grace_period: 30s
+    ports:
+      - "7863:7863"
+    user: "0:0"
+    environment:
+      TZ: Asia/Shanghai
+```
 
+然后在同一目录执行：
+
+```bash
 docker compose pull
 docker compose up -d
+docker compose logs workbuddy2api | grep 'api_key='
 
 curl -s http://localhost:7863/healthz
 # {"healthy":0,"total":0,"service":"workbuddy2api"}
 ```
 
-启动后打开 **`http://localhost:7863/panel/`**，用面板「添加账号」完成登录（见下节）。
+首次启动会自动生成 `./config/config.json` 和随机 `api_key`，密钥可从上面的日志命令获取。启动后打开 **`http://localhost:7863/panel/`**，输入该密钥并完成账号登录。
 
 默认镜像地址为 `ghcr.io/xigemax/workbuddy2api-panel:latest`。首次发布后请在 GitHub 的 **Packages → workbuddy2api-panel → Package settings** 中将可见性设为 **Public**；若保持私有，部署机器需要先执行 `docker login ghcr.io`。
 
@@ -254,7 +246,7 @@ curl -s http://localhost:7863/healthz
 docker compose pull && docker compose up -d --force-recreate   # 更新到最新镜像
 docker compose logs -f          # 跟踪日志
 docker compose restart          # 重启
-docker compose down             # 停止并移除容器（数据在 ./auths 与 ./data，不受影响）
+docker compose down             # 停止并移除容器（数据在 ./auths、./data、./config，不受影响）
 ```
 
 ### 方式二：Windows 单文件运行（无需 Docker）
@@ -648,11 +640,11 @@ GitHub Actions 在 `main` 分支或 `v*` 标签更新后自动构建并发布镜
 `docker-compose.yml` 默认拉取 `latest`。多阶段镜像（`golang:1.23-alpine` 构建 → `alpine:3.20` 运行）一次编译全部四个二进制并随镜像分发：
 
 - **wb2api**（主服务）、**signin_bin**、**login**、**credit** + 脚本（`login.sh` / `signin.sh` / `credit.sh` / `scripts/probe_active.py`）
-- 以 `app` 用户（uid 10001）运行，`app/auths` 与 `app/data` 预建
-- 镜像内默认落 `config.example.json` 作为空配置（不含密钥），生产用挂载卷覆盖 `/app/config.json`
+- 镜像默认以 `app` 用户（uid 10001）运行；仓库 Compose 为免手工初始化宿主机目录使用 `user: "0:0"`，非 root 部署需预先创建并授权 `./auths`、`./data`、`./config`
+- 镜像内默认落 `config.example.json`；仓库 Compose 通过 `command` 使用 `/app/config/config.json`，首次启动自动生成随机密钥
 - 内置 `HEALTHCHECK`（`wget /healthz`，30s 间隔）
 
-账号 / 数据通过 `docker-compose.yml` 卷挂载持久化：`./auths`、`./data`、`./config.json`。
+账号 / 数据通过 `docker-compose.yml` 卷挂载持久化：`./auths`、`./data`、`./config/config.json`。
 
 ### 工具脚本
 
@@ -705,8 +697,8 @@ python3 scripts/probe_max_tokens.py   --base http://127.0.0.1:7863/v1 --key sk-x
 
 - **位置**：`./auths`（`auth_dir` 可配），文件名 `workbuddy-<uid>.json`
 - **内容**：明文 `accessToken` / `refreshToken` + 账号元信息（`account.uid` / `enterpriseId` / `nickname`）
-- **权限**：容器内以 `app` 用户（uid 10001）运行；token 刷新由 `SaveAtomic` 以 `0600` 原子写回（tmp + rename）；`login.sh` 首次落盘遵循登录 umask，建议手动 `chmod 600 auths/*.json`
-- **切勿提交 git**：`.gitignore` 已排除 `auths/`、`data/`、`backups/`、`config.json`、`*.key`、`*.pem`、`*.env`、`docs/` 及除 README 外的全部 `*.md` 工作文档
+- **权限**：镜像默认以 `app` 用户（uid 10001）运行；token 刷新由 `SaveAtomic` 以 `0600` 原子写回（tmp + rename）；`login.sh` 首次落盘遵循登录 umask，建议手动 `chmod 600 auths/*.json`
+- **切勿提交 git**：`.gitignore` 已排除 `auths/`、`data/`、`config/`、`backups/`、`config.json`、`*.key`、`*.pem`、`*.env`、`docs/` 及除 README 外的全部 `*.md` 工作文档
 
 ### 2. 网络暴露与日志敏感度
 
@@ -746,23 +738,16 @@ python3 scripts/probe_max_tokens.py   --base http://127.0.0.1:7863/v1 --key sk-x
 - 若上游真的返回 413/超限错误，网关按既有错误分类链路如实透传（不打码、不罚号——超限是请求侧问题）
 - 客户端中途断流导致的半截 body 在读入阶段即报 `400 invalid_request`，不会把截断 JSON 喂给上游（issue #41 语义保留在读错误路径）
 
-### Docker 部署登录后报「写入 auths/…json.tmp 失败： permission denied」？
+### Docker 改用非 root 后报「写入 auths/…json.tmp 失败： permission denied」？
 
-容器以 `app` 用户（uid 10001）运行，而宿主机挂载的 `./auths`、`./data` 目录属主不是它——写凭证 tmp 文件被拒。三种解法任选（前两种均**无需 root 容器**）：
+仓库默认 Compose 以 `user: "0:0"` 运行，可自动创建并写入 `./auths`、`./data`、`./config`。如果改为 `app` 用户（uid 10001）或其他 UID，需要先让容器用户拥有这些目录：
 
 ```bash
-# 方案 1（推荐，非 root）：让容器以你自己的 uid 运行——挂载目录本来就是你建的
-PUID=$(id -u) PGID=$(id -g) docker compose up -d --force-recreate
-# 或写进 .env 文件长期生效（.env 已被 .gitignore 忽略）：
-#   echo "PUID=1000" > .env && echo "PGID=1000" >> .env
-
-# 方案 2：把挂载目录属主交给容器默认用户（需要 sudo）
-sudo chown -R 10001:10001 ./auths ./data ./config.json
-
-# 方案 3：compose 设 user: "0:0" 以 root 运行（NAS/群晖不便 chown 时用）
+mkdir -p auths data config
+sudo chown -R 10001:10001 auths data config
 ```
 
-报错信息里自带这条指引；compose 的 `user` 已参数化为 `${PUID:-10001}:${PGID:-10001}`。
+然后将 Compose 中的 `user: "0:0"` 改为 `user: "10001:10001"`，或改为你自己的 UID/GID。
 
 ### 账号被 Disable 后如何恢复？
 

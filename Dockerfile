@@ -26,10 +26,12 @@ COPY --from=build /out/credit /app/credit
 COPY login.sh signin.sh credit.sh /app/
 COPY scripts/probe_active.py /app/scripts/probe_active.py
 RUN sed -i 's/\r$//' /app/login.sh /app/signin.sh /app/credit.sh && chmod 755 /app/login.sh /app/signin.sh /app/credit.sh
-# 镜像不带真实配置：落 example 作为默认（生产由挂载卷 /app/config.json 覆盖）
+# 镜像不带真实配置：落 example 作为无参数 docker run 的默认；
+# 仓库 Compose 通过 command 使用挂载目录 /app/config/config.json 自动生成随机密钥。
 COPY config.example.json /app/config.json
 USER app
 EXPOSE 7863
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s \
   CMD wget -qO- http://127.0.0.1:7863/healthz || exit 1
-ENTRYPOINT ["/app/wb2api", "-config", "/app/config.json"]
+ENTRYPOINT ["/app/wb2api"]
+CMD ["-config", "/app/config.json"]
